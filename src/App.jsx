@@ -200,11 +200,13 @@ export default function App() {
         for (let cycle = 0; cycle < vliwSlots.length; cycle++) {
           vliwSlots[cycle].forEach(prevOp => {
             const raw = op.reads.find(r => prevOp.writes.includes(r) || prevOp.writes.includes('MEM_ALL') || r === 'MEM_ALL');
-            const war = op.writes.find(w => prevOp.reads.includes(w) || prevOp.reads.includes('MEM_ALL') || w === 'MEM_ALL');
             const waw = op.writes.find(w => prevOp.writes.includes(w) || prevOp.writes.includes('MEM_ALL') || w === 'MEM_ALL');
             
-            if (raw || war || waw) {
-              const reason = raw ? `RAW on ${raw}` : war ? `WAR on ${war}` : `WAW on ${waw}`;
+            // RAW and WAW require delay to next cycle.
+            // WAR (anti-dependency) is safe: VLIW read-before-write semantics
+            // guarantee the old value is read before the new value is written.
+            if (raw || waw) {
+              const reason = raw ? `RAW on ${raw}` : `WAW on ${waw}`;
               if (cycle + 1 > earliestCycle) {
                 earliestCycle = cycle + 1;
                 op.scheduleReasons = [`Delayed by ${reason} from '${prevOp.original}' (Cycle ${cycle})`];
@@ -314,6 +316,7 @@ export default function App() {
     let branchTaken = false;
     let jumpTarget = null;
     let branchEvaluated = false;
+    let firstTakenBranchId = Infinity;
 
     // Visual State Tracking
     const activeAlus = [null, null, null, null];
@@ -373,6 +376,7 @@ export default function App() {
             nextPc = labelMap[op.target.val] ?? pc + 1;
             branchTaken = true;
             jumpTarget = op.target.val;
+            firstTakenBranchId = op.id;
           }
           break;
         case 'JMP':
@@ -381,24 +385,36 @@ export default function App() {
             nextPc = labelMap[op.target.val] ?? pc + 1;
             branchTaken = true;
             jumpTarget = op.target.val;
+            firstTakenBranchId = op.id;
           }
           break;
         default:
           break;
       }
-      return { result, writeTarget };
+      return { result, writeTarget, opId: op.id };
     });
 
-    execResults.forEach(({ result, writeTarget }) => {
-      if (writeTarget?.type === 'REG') nextRegs[writeTarget.name] = result;
-      else if (writeTarget?.type === 'MEM') nextMem[writeTarget.name] = result;
+    // Only commit writes for ops that precede the first taken branch in
+    // program order. Ops speculatively moved above branches by trace
+    // scheduling must not commit when the branch fires (models the
+    // compensation/recovery code described in Fisher's paper).
+    execResults.forEach(({ result, writeTarget, opId }) => {
+      if (opId < firstTakenBranchId) {
+        if (writeTarget?.type === 'REG') nextRegs[writeTarget.name] = result;
+        else if (writeTarget?.type === 'MEM') nextMem[writeTarget.name] = result;
+      }
     });
 
     setRegisters(nextRegs);
     setMemory(nextMem);
     setPc(nextPc);
     setCycles(cycles + 1);
-    setRiscCycles(riscCycles + sortedOps.length); // Add up RISC cycles (1 per instruction)
+    // RISC equivalent: count only ops that would execute sequentially
+    // (ops before the taken branch + the branch itself; skip speculative ops)
+    const effectiveOps = branchTaken
+      ? sortedOps.filter(op => op.id <= firstTakenBranchId).length
+      : sortedOps.length;
+    setRiscCycles(riscCycles + effectiveOps);
     
     setActiveDatapath({
       alus: activeAlus,
