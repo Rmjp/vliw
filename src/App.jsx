@@ -1,44 +1,72 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Play, Square, SkipForward, Cpu, Database, Binary, Info, GitBranch, LayoutGrid, Zap, AlertTriangle, ArrowRight, Activity } from 'lucide-react';
 
-const DEFAULT_CODE = `; ELI-512 vs RISC: THE POWER OF TRACE SCHEDULING
-; Fisher's Claim: "10 to 30 times faster than an equivalent sequential machine"
-; This simulates an unrolled scientific loop doing: C[i] = A[i] + B[i]
+const DEFAULT_CODE = `; ELI-512 COMPREHENSIVE DEMONSTRATION
+; This code exercises every major feature proposed in the 1983 paper!
+; Hover over instructions in the VLIW Grid to see Compiler Tooltips.
 
-; Setup Arrays in Interleaved Memory Banks
-DATA #0, #5     ; A[0] -> Bank 0
-DATA #1, #10    ; B[0] -> Bank 1
-DATA #2, #15    ; A[1] -> Bank 2
-DATA #3, #20    ; B[1] -> Bank 3
+; --- MEMORY SETUP ---
+DATA #0, #10    ; Vector A[0] (Bank 0)
+DATA #1, #20    ; Vector A[1] (Bank 1)
+DATA #2, #30    ; Vector A[2] (Bank 2)
+DATA #3, #40    ; Vector A[3] (Bank 3)
+DATA #4, #50    ; Vector A[4] (Bank 0)
+DATA #10, #0    ; Pointer base
 
-; 1. UNROLLED LOOP (Parallel Memory Access)
-; RISC: 4 cycles. VLIW predicts banks 0,1,2,3 and does them in 1 cycle!
+; --- 1. PARALLEL MEMORY & BANK CONFLICTS ---
+; The compiler predicts banks (addr % 4). 
+; Loads 1, 2, 3, 4 map to Banks 0, 1, 2, 3 and run in Cycle 0.
 LOAD R1, #0     
 LOAD R2, #1     
 LOAD R3, #2     
 LOAD R4, #3     
 
-; 2. PARALLEL MATH
-; RISC: 2 cycles. VLIW: 1 cycle.
-ADD R5, R1, R2  ; C[0] = A[0] + B[0]
-ADD R6, R3, R4  ; C[1] = A[1] + B[1]
+; #4 mod 4 = Bank 0. But Bank 0 is busy with 'LOAD R1, #0'!
+; Hover over this in the grid: the compiler pushes it to Cycle 1!
+LOAD R5, #4     
 
-; 3. N+1 WAY JUMP (Parallel branches)
-; ELI-512 tests multiple conditions simultaneously.
-; RISC: 2 branches = 2+ cycles. VLIW: 1 cycle.
-JNZ R5, ERR_HANDLER
-JNZ R6, ERR_HANDLER
+; --- 2. N+1 WAY JUMPS & TRACE SCHEDULING ---
+; Math setup
+SUB R6, R1, #10 
+SUB R7, R2, #20
 
-; 4. TRACE SCHEDULING (Global Compaction)
-; Toggle Trace Scheduling ON/OFF! 
-; When ON, these independent operations float ABOVE the branches.
-MUL R7, R5, #2
-MUL R8, R6, #2
+; ELI-512 evaluates multiple jumps in parallel using a Priority Encoder!
+; If Trace Scheduling is ON, notice how the MUL ops below float 
+; ABOVE these jumps into the empty ALU slots!
+JNZ R6, ERR_A
+JNZ R7, ERR_B
 
+; These get hoisted past the branches!
+MUL R8, R3, R4
+MUL R9, R4, R5
+
+; --- 3. UNPREDICTABLE MEMORY (Pointer Chasing) ---
+; Fisher notes we can't always predict banks (e.g., pointers).
+; R10 loads the pointer address.
+LOAD R10, #10   
+
+; Because R10 is a register, the compiler cannot predict the bank.
+; It assumes a "MEM_ALL" dependency and safely forces this to wait 
+; for ALL prior memory operations to finish.
+LOAD R11, R10   
+ADD R12, R11, #5
+
+JMP SUCCESS
+
+; --- 4. OFF-TRACE COMPENSATION CODE ---
+ERR_A:
+MOV R15, #1
+STORE R15, #15
 JMP END
 
-ERR_HANDLER:
-MOV R7, #999
+ERR_B:
+MOV R15, #2
+STORE R15, #15
+JMP END
+
+SUCCESS:
+MOV R15, #99
+STORE R15, #15  ; Success flag
 
 END:
 `;
@@ -65,6 +93,7 @@ export default function App() {
   });
 
   const timerRef = useRef(null);
+  const activeCycleRef = useRef(null);
 
   // --- Initialize CPU State ---
   const resetCPU = (initMem = {}) => {
@@ -425,6 +454,12 @@ export default function App() {
   };
 
   useEffect(() => {
+    if (activeCycleRef.current) {
+      activeCycleRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }
+  }, [pc]);
+
+  useEffect(() => {
     if (isRunning) {
       timerRef.current = setInterval(stepVLIW, 1200); // Slower for visual tracing
     } else {
@@ -606,7 +641,7 @@ export default function App() {
                     const labelsInCycle = Object.entries(labelMap).filter(([_, c]) => c === cycleIndex).map(([l]) => l);
 
                     return (
-                      <div key={cycleIndex} className={`grid grid-cols-12 gap-2 p-2 rounded-lg border transition-all duration-300 ${
+                      <div key={cycleIndex} ref={isActive ? activeCycleRef : null} className={`grid grid-cols-12 gap-2 p-2 rounded-lg border transition-all duration-300 ${
                           isActive ? 'bg-blue-900/20 border-blue-500 shadow-[0_0_20px_rgba(59,130,246,0.15)] scale-[1.01]' : 
                           isPast ? 'bg-slate-800/20 border-slate-800/50 opacity-50' : 
                           'bg-slate-800/50 border-slate-700'
